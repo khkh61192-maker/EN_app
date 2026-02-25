@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vocab Streamer Pro - 分組學習版</title>
+    <script src="https://cdn.jsdelivr.net/npm/dexie@3/dist/dexie.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .preserve-format { white-space: pre-wrap; word-break: break-word; }
+        .active-word { background-color: #fef3c7; border-left: 6px solid #f59e0b; transform: scale(1.02); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .word-card { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        html { scroll-behavior: smooth; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen pb-20 font-sans text-slate-800">
+
+<div class="max-w-2xl mx-auto p-4">
+    <!-- 頂部控制面板 -->
+    <header class="sticky top-0 bg-white/95 backdrop-blur shadow-md p-4 rounded-b-2xl z-30 mb-2 border-b border-slate-200">
+        <div class="flex justify-between items-center mb-4">
+            <div>
+                <h1 class="text-xl font-black text-blue-600">Vocab Streamer</h1>
+                <p id="totalCount" class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1 italic">Loading...</p>
+            </div>
+            <div class="flex gap-2">
+                <button id="exportBtn" class="text-[10px] bg-emerald-50 text-emerald-600 px-3 py-1.5 rounded-full border border-emerald-100 font-bold hover:bg-emerald-100">備份</button>
+                <button id="toggleAddForm" class="text-[10px] bg-blue-50 text-blue-600 px-3 py-1.5 rounded-full border border-blue-100 font-bold hover:bg-blue-100">+ 新增</button>
+            </div>
+        </div>
+
+        <!-- 群組選擇器 -->
+        <div class="mb-4 bg-blue-600 p-3 rounded-xl shadow-inner flex items-center gap-3">
+            <span class="text-white text-xs font-bold whitespace-nowrap">目前學習群組:</span>
+            <select id="groupFilter" class="bg-white text-blue-700 text-sm font-bold rounded-lg block w-full p-2 outline-none">
+                <option value="ALL">全部單字</option>
+            </select>
+        </div>
+
+        <!-- 手動新增表單 (隱藏) -->
+        <div id="addForm" class="hidden bg-slate-100 p-4 rounded-xl mb-4 border border-slate-200 shadow-inner">
+            <div class="grid grid-cols-2 gap-2 mb-2">
+                <input type="text" id="newWord" placeholder="單字 (必填)" class="p-2 border rounded-lg focus:ring-2 focus:ring-blue-400 outline-none">
+                <input type="text" id="newGroup" placeholder="群組名稱 (選填)" class="p-2 border rounded-lg focus:ring-2 focus:ring-blue-400 outline-none">
+            </div>
+            <input type="text" id="newPos" placeholder="詞性 (n., v., adj...)" class="w-full p-2 border rounded-lg mb-2 focus:ring-2 focus:ring-blue-400 outline-none">
+            <textarea id="newDef" placeholder="定義" class="w-full p-2 border rounded-lg mb-2 focus:ring-2 focus:ring-blue-400 outline-none" rows="3"></textarea>
+            <textarea id="newEx" placeholder="例句" class="w-full p-2 border rounded-lg mb-2 focus:ring-2 focus:ring-blue-400 outline-none" rows="2"></textarea>
+            <div class="flex gap-2">
+                <button id="saveWordBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg flex-1 font-bold">儲存</button>
+                <button id="closeFormBtn" class="bg-slate-300 text-slate-700 px-4 py-2 rounded-lg font-bold">取消</button>
+            </div>
+        </div>
+        
+        <div class="space-y-3">
+            <div class="flex items-center gap-2 bg-slate-50 p-2 rounded-lg border border-dashed border-slate-300">
+                <input type="file" id="excelInput" accept=".xlsx, .xls" class="block w-full text-[10px] text-slate-500 file:mr-3 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-slate-400 file:text-white cursor-pointer"/>
+            </div>
+
+            <div class="flex flex-wrap gap-4 items-center justify-between px-1">
+                <div class="flex items-center gap-3">
+                    <label class="text-xs font-bold text-slate-500">語速: <span id="speedVal" class="text-blue-600">1.0</span></label>
+                    <input type="range" id="speedRange" min="0.5" max="2" step="0.1" value="1.0" class="w-20 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer">
+                </div>
+                <div class="flex gap-3">
+                    <label class="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-slate-500"><input type="checkbox" id="sayExample" checked> 念例句</label>
+                    <label class="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-slate-500"><input type="checkbox" id="autoScroll" checked> 捲動</label>
+                </div>
+            </div>
+
+            <div class="flex gap-2">
+                <button id="playBtn" class="flex-[3] bg-blue-600 text-white py-3 rounded-xl font-black text-lg shadow-lg hover:bg-blue-700 active:scale-95 transition-all">開始循環播放</button>
+                <button id="stopBtn" class="flex-1 bg-slate-200 text-slate-600 py-3 rounded-xl font-bold active:scale-95 transition-all">停止</button>
+                <button id="clearBtn" class="bg-red-50 text-red-400 px-3 rounded-xl text-xs font-bold border border-red-50">清空</button>
+            </div>
+        </div>
+    </header>
+
+    <!-- 單字清單 -->
+    <div id="wordList" class="space-y-3 mt-4"></div>
+</div>
+
+<script>
+    // --- 1. 資料庫 (增加 Group 索引) ---
+    const db = new Dexie("VocabAppDB_v5");
+    db.version(1).stores({ 
+        words: "++id, &Word, Pos, Definition, Example, Group" 
+    });
+
+    let allWords = [];
+    let filteredWords = [];
+    let currentIndex = -1;
+    let isPlaying = false;
+    const synth = window.speechSynthesis;
+
+    // --- 2. 載入資料與更新介面 ---
+    async function loadData() {
+        allWords = await db.words.toArray();
+        const groups = [...new Set(allWords.map(w => w.Group || '未分類'))];
+        
+        // 更新群組下拉選單
+        const groupFilter = document.getElementById('groupFilter');
+        const currentGroup = groupFilter.value;
+        groupFilter.innerHTML = `<option value="ALL">全部單字 (${allWords.length})</option>` + 
+            groups.map(g => `<option value="${g}">${g} (${allWords.filter(w => (w.Group || '未分類') === g).length})</option>`).join('');
+        groupFilter.value = currentGroup;
+
+        filterWords();
+    }
+
+    function filterWords() {
+        const selectedGroup = document.getElementById('groupFilter').value;
+        if (selectedGroup === 'ALL') {
+            filteredWords = allWords;
+        } else {
+            filteredWords = allWords.filter(w => (w.Group || '未分類') === selectedGroup);
+        }
+        
+        document.getElementById('totalCount').innerText = `目前顯示: ${filteredWords.length} / 總計: ${allWords.length}`;
+        renderList();
+    }
+
+    // --- 3. 渲染列表 (加入數字編號) ---
+    function renderList() {
+        const wordListEl = document.getElementById('wordList');
+        if (filteredWords.length === 0) {
+            wordListEl.innerHTML = `<div class="text-center py-20 text-slate-300 italic">無單字數據</div>`;
+            return;
+        }
+
+        wordListEl.innerHTML = filteredWords.map((item, index) => `
+            <div id="word-${index}" class="word-card p-5 bg-white rounded-2xl shadow-sm border border-slate-100 cursor-pointer flex gap-4" onclick="previewSpeak(${index})">
+                <div class="text-blue-300 font-black text-xs pt-1">#${index + 1}</div>
+                <div class="flex-1">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-xl font-bold text-slate-800">${item.Word}</span>
+                        <div class="flex gap-2">
+                            <span class="text-[9px] font-black text-slate-400 bg-slate-100 px-2 py-0.5 rounded uppercase tracking-tighter">${item.Group || '未分類'}</span>
+                            <span class="text-[9px] font-black text-blue-500 bg-blue-50 px-2 py-0.5 rounded uppercase">${item.Pos || 'VOCAB'}</span>
+                        </div>
+                    </div>
+                    <div class="text-slate-600 text-sm leading-relaxed preserve-format font-medium">${item.Definition || ''}</div>
+                    ${item.Example ? `
+                    <div class="mt-3 p-2.5 bg-slate-50 rounded-lg border border-slate-100 text-slate-500 text-xs italic preserve-format">${item.Example}</div>
+                    ` : ''}
+                </div>
+            </div>
+        `).join('');
+    }
+
+    // --- 4. 播放邏輯 (使用 filteredWords) ---
+    function speak(text, callback) {
+        if (!isPlaying && !window.singlePlay) return;
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.rate = parseFloat(document.getElementById('speedRange').value);
+        utter.lang = 'en-US';
+        utter.onend = callback;
+        synth.speak(utter);
+    }
+
+    window.previewSpeak = (index) => {
+        window.singlePlay = true;
+        synth.cancel();
+        speak(filteredWords[index].Word, () => { window.singlePlay = false; });
+    };
+
+    async function playLoop() {
+        if (!isPlaying) return;
+        if (currentIndex >= filteredWords.length - 1) currentIndex = -1;
+        currentIndex++;
+        
+        document.querySelectorAll('.active-word').forEach(el => el.classList.remove('active-word'));
+        const currentEl = document.getElementById(`word-${currentIndex}`);
+        if (currentEl) {
+            currentEl.classList.add('active-word');
+            if (document.getElementById('autoScroll').checked) currentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        const wordObj = filteredWords[currentIndex];
+        speak(wordObj.Word, () => {
+            if (document.getElementById('sayExample').checked && wordObj.Example) {
+                setTimeout(() => speak(wordObj.Example, () => setTimeout(playLoop, 2000)), 800);
+            } else {
+                setTimeout(playLoop, 1500);
+            }
+        });
+    }
+
+    // --- 5. 事件監聽 ---
+    document.getElementById('groupFilter').addEventListener('change', () => {
+        currentIndex = -1;
+        isPlaying = false;
+        synth.cancel();
+        document.getElementById('playBtn').innerText = "開始循環播放";
+        filterWords();
+    });
+
+    document.getElementById('saveWordBtn').addEventListener('click', async () => {
+        const Word = document.getElementById('newWord').value.trim();
+        const Group = document.getElementById('newGroup').value.trim() || '未分類';
+        const Pos = document.getElementById('newPos').value.trim();
+        const Definition = document.getElementById('newDef').value.trim();
+        const Example = document.getElementById('newEx').value.trim();
+
+        if (!Word) return alert("請輸入單字");
+        try {
+            await db.words.add({ Word, Group, Pos, Definition, Example });
+            document.getElementById('addForm').classList.add('hidden');
+            loadData();
+        } catch (e) { alert("單字重複！"); }
+    });
+
+    document.getElementById('playBtn').addEventListener('click', () => {
+        if (filteredWords.length === 0) return;
+        isPlaying = true;
+        document.getElementById('playBtn').innerText = "播放中...";
+        playLoop();
+    });
+
+    document.getElementById('stopBtn').addEventListener('click', () => {
+        isPlaying = false;
+        synth.cancel();
+        document.getElementById('playBtn').innerText = "繼續播放";
+    });
+
+    document.getElementById('excelInput').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        const data = await file.arrayBuffer();
+        const workbook = XLSX.read(data);
+        const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+        for (const item of jsonData) {
+            try { await db.words.add({
+                Word: String(item.Word || ''),
+                Group: String(item.Group || '未分類'),
+                Pos: String(item.Pos || ''),
+                Definition: String(item.Definition || ''),
+                Example: String(item.Example || '')
+            }); } catch (e) {}
+        }
+        loadData();
+    });
+
+    document.getElementById('exportBtn').addEventListener('click', async () => {
+        const ws = XLSX.utils.json_to_sheet(allWords);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Words");
+        XLSX.writeFile(wb, `Backup.xlsx`);
+    });
+
+    document.getElementById('toggleAddForm').addEventListener('click', () => document.getElementById('addForm').classList.toggle('hidden'));
+    document.getElementById('closeFormBtn').addEventListener('click', () => document.getElementById('addForm').classList.add('hidden'));
+    document.getElementById('speedRange').addEventListener('input', (e) => document.getElementById('speedVal').innerText = e.target.value);
+    document.getElementById('clearBtn').addEventListener('click', async () => { if(confirm('全清？')){ await db.words.clear(); loadData(); } });
+
+</script>
+</body>
+</html>
