@@ -3,7 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Vocab Pro - 背景播放與修復版</title>
+    <title>Vocab Pro - 穩定學習版</title>
+    <!-- 
+      DEVELOPER NOTES / 技術交接手冊:
+      1. 核心技術棧: 
+         - Dexie.js: IndexedDB 的封裝庫，負責 4000+ 單字的永久儲存。
+         - SheetJS (xlsx): 負責 Excel 匯入與備份導出。
+         - Tailwind CSS: UI 框架。
+         - Web Speech API: 瀏覽器原生 TTS 發音。
+      2. 儲存架構:
+         - 資料庫名: VocabProDB
+         - 表名: words (索引: Word, Group)
+      3. 已知限制:
+         - 手機背景播放: 由於瀏覽器省電機制，切換 App 或鎖屏後 JavaScript 通常會被暫停。
+         - 發音依賴: 依賴系統內建語音包，iOS 與 Android 的聲音表現可能不同。
+      4. 未來優化方向: 
+         - 增加「學習進度」欄位 (如: 已熟練/待加強)。
+         - 導入 Web Worker 處理大量數據運算以防 UI 卡頓。
+    -->
     <script src="https://cdn.jsdelivr.net/npm/dexie@3/dist/dexie.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
@@ -12,57 +29,59 @@
         .active-word { background-color: #fef3c7; border-left: 6px solid #f59e0b; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
         .word-card { transition: all 0.2s ease-out; }
         html { scroll-behavior: smooth; }
-        /* 避免 iOS 放大 input */
-        input, textarea, select { font-size: 16px !important; }
+        /* 遮罩層樣式 */
+        #historyModal { display: none; }
     </style>
 </head>
 <body class="bg-slate-100 min-h-screen pb-24 font-sans text-slate-800">
 
-<!-- 隱形音頻，用來騙過系統維持背景運作 -->
-<audio id="silentAudio" loop><source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD5AAAB+AAABAAgAZGF0YQAAAAA=" type="audio/wav"></audio>
-
 <div class="max-w-2xl mx-auto p-4">
-    <header class="sticky top-0 bg-white/95 backdrop-blur shadow-md p-4 rounded-b-2xl z-30 mb-2">
-        <div class="flex justify-between items-center mb-4">
+    <!-- 頂部控制面板 -->
+    <header class="sticky top-0 bg-white/95 backdrop-blur shadow-md p-4 rounded-b-2xl z-30 mb-2 border-b border-slate-200">
+        <div class="flex justify-between items-start mb-4">
             <div>
-                <h1 class="text-xl font-black text-blue-600">Vocab Pro</h1>
-                <p id="totalCount" class="text-[10px] text-slate-400 font-bold tracking-widest mt-1 uppercase">Loading Storage...</p>
+                <h1 class="text-xl font-black text-blue-600 flex items-center gap-2">
+                    Vocab Pro 
+                    <span id="versionTag" class="text-[10px] bg-slate-200 text-slate-500 px-2 py-0.5 rounded-full cursor-pointer hover:bg-blue-100 hover:text-blue-600 transition-colors">v1.1.0</span>
+                </h1>
+                <p id="totalCount" class="text-[10px] text-slate-400 font-bold tracking-widest mt-1 uppercase italic">連線資料庫中...</p>
             </div>
             <div class="flex gap-2">
-                <button id="exportBtn" class="text-[10px] bg-emerald-50 text-emerald-600 px-3 py-1.5 rounded-full border border-emerald-100 font-bold shadow-sm">備份</button>
-                <button id="toggleAddForm" class="text-[10px] bg-blue-50 text-blue-600 px-3 py-1.5 rounded-full border border-blue-100 font-bold shadow-sm">+ 新增</button>
+                <button id="exportBtn" class="text-[10px] bg-emerald-50 text-emerald-600 px-3 py-1.5 rounded-full border border-emerald-100 font-bold">備份</button>
+                <button id="toggleAddForm" class="text-[10px] bg-blue-50 text-blue-600 px-3 py-1.5 rounded-full border border-blue-100 font-bold">+ 新增</button>
             </div>
         </div>
 
-        <div class="mb-4 bg-blue-600 p-3 rounded-xl shadow-lg flex items-center gap-2">
-            <span class="text-white text-[10px] font-black italic">LEARN:</span>
-            <select id="groupFilter" class="bg-white text-blue-700 text-sm font-bold rounded-lg block w-full p-2 outline-none border-none shadow-sm cursor-pointer">
-                <option value="ALL">所有單字</option>
+        <!-- 群組選擇 -->
+        <div class="mb-4 bg-blue-600 p-3 rounded-xl shadow-lg">
+            <select id="groupFilter" class="bg-white text-blue-700 text-sm font-bold rounded-lg block w-full p-2 outline-none border-none shadow-inner">
+                <option value="ALL">全部單字</option>
             </select>
         </div>
 
         <!-- 手動新增表單 -->
         <div id="addForm" class="hidden bg-slate-50 p-4 rounded-xl mb-4 border border-blue-200 shadow-inner">
             <div class="grid grid-cols-2 gap-2 mb-2">
-                <input type="text" id="newWord" placeholder="單字 (必填)" class="p-2 border rounded-lg text-sm bg-white outline-blue-400">
-                <input type="text" id="newGroup" placeholder="群組名稱" class="p-2 border rounded-lg text-sm bg-white outline-blue-400">
+                <input type="text" id="newWord" placeholder="單字" class="p-2 border rounded-lg text-sm outline-blue-400">
+                <input type="text" id="newGroup" placeholder="群組 (選填)" class="p-2 border rounded-lg text-sm outline-blue-400">
             </div>
-            <input type="text" id="newPos" placeholder="詞性" class="w-full p-2 border rounded-lg mb-2 text-sm bg-white outline-blue-400">
-            <textarea id="newDef" placeholder="定義內容 (支援換行)" class="w-full p-2 border rounded-lg mb-2 text-sm bg-white outline-blue-400" rows="3"></textarea>
-            <textarea id="newEx" placeholder="例句內容" class="w-full p-2 border rounded-lg mb-2 text-sm bg-white outline-blue-400" rows="2"></textarea>
+            <input type="text" id="newPos" placeholder="詞性" class="w-full p-2 border rounded-lg mb-2 text-sm outline-blue-400">
+            <textarea id="newDef" placeholder="定義 (支援換行)" class="w-full p-2 border rounded-lg mb-2 text-sm outline-blue-400" rows="3"></textarea>
+            <textarea id="newEx" placeholder="例句" class="w-full p-2 border rounded-lg mb-2 text-sm outline-blue-400" rows="2"></textarea>
             <div class="flex gap-2">
-                <button id="saveWordBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg flex-1 font-bold shadow-md hover:bg-blue-700">立即儲存</button>
+                <button id="saveWordBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg flex-1 font-bold shadow-md">儲存單字</button>
                 <button id="closeFormBtn" class="bg-slate-300 text-slate-700 px-4 py-2 rounded-lg font-bold">取消</button>
             </div>
         </div>
         
+        <!-- 播放與設定 -->
         <div class="space-y-3">
             <input type="file" id="excelInput" accept=".xlsx, .xls" class="block w-full text-[10px] text-slate-400 file:mr-3 file:py-1.5 file:px-4 file:rounded-full file:border-0 file:bg-slate-200 file:text-slate-600 cursor-pointer"/>
 
             <div class="flex flex-wrap gap-4 items-center justify-between px-1">
                 <div class="flex items-center gap-3">
-                    <label class="text-[11px] font-black text-slate-400">語速 <span id="speedVal" class="text-blue-500">1.0</span></label>
-                    <input type="range" id="speedRange" min="0.5" max="2" step="0.1" value="1.0" class="w-24 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer">
+                    <label class="text-[11px] font-black text-slate-400 uppercase">語速 <span id="speedVal" class="text-blue-500 font-bold">1.0</span></label>
+                    <input type="range" id="speedRange" min="0.5" max="2" step="0.1" value="1.0" class="w-20 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer">
                 </div>
                 <div class="flex gap-4">
                     <label class="flex items-center gap-1.5 cursor-pointer text-[11px] font-black text-slate-500"><input type="checkbox" id="sayExample" checked> 念例句</label>
@@ -73,17 +92,42 @@
             <div class="flex gap-2">
                 <button id="playBtn" class="flex-[3] bg-blue-600 text-white py-4 rounded-xl font-black text-lg shadow-xl shadow-blue-200 active:scale-95 transition-all">開始循環播放</button>
                 <button id="stopBtn" class="flex-1 bg-slate-200 text-slate-600 py-4 rounded-xl font-black active:scale-95 transition-all">停止</button>
-                <button id="clearBtn" class="bg-red-50 text-red-400 px-3 rounded-xl text-[10px] font-bold border border-red-50">重設</button>
+                <button id="clearBtn" class="bg-red-50 text-red-400 px-3 rounded-xl text-[10px] font-bold border border-red-50">清空</button>
             </div>
         </div>
     </header>
 
-    <div id="wordList" class="space-y-3 mt-4 px-1"></div>
+    <!-- 單字列表 -->
+    <div id="wordList" class="space-y-3 mt-4"></div>
+</div>
+
+<!-- 改版歷史 Modal -->
+<div id="historyModal" class="fixed inset-0 bg-black/60 z-[50] flex items-center justify-center p-4 backdrop-blur-sm">
+    <div class="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl">
+        <h2 class="text-xl font-black text-slate-800 mb-4 border-b pb-2">改版歷史紀錄</h2>
+        <div class="space-y-4 max-h-[60vh] overflow-y-auto text-sm leading-relaxed pr-2">
+            <div>
+                <span class="font-bold text-blue-600">v1.1.0 (當前版本)</span>
+                <p class="text-slate-600">・加入改版歷史查看功能。<br>・代碼重構，加入技術交接註解。<br>・優化存檔同步與畫面刷新邏輯。</p>
+            </div>
+            <div>
+                <span class="font-bold text-slate-700">v1.0.5</span>
+                <p class="text-slate-500">・新增單字編號 (#) 顯示。<br>・加入 Group 群組分類功能。<br>・支援 Excel 換行格式保留 (white-space)。</p>
+            </div>
+            <div>
+                <span class="font-bold text-slate-700">v1.0.0</span>
+                <p class="text-slate-500">・核心功能上線：Excel 匯入、TTS 發音、IndexedDB 永久儲存。</p>
+            </div>
+        </div>
+        <button id="closeHistory" class="mt-6 w-full bg-slate-800 text-white py-3 rounded-xl font-bold">關閉</button>
+    </div>
 </div>
 
 <script>
-    // --- 1. 資料庫邏輯 (使用穩定版 Dexie) ---
-    const db = new Dexie("VocabMasterStorageV6");
+    /* -------------------------------------------------------------------------
+       1. 資料庫初始化 (DATA PERSISTENCE)
+    ------------------------------------------------------------------------- */
+    const db = new Dexie("VocabProDB_Stable");
     db.version(1).stores({ 
         words: "++id, &Word, Group, Pos, Definition, Example" 
     });
@@ -93,28 +137,29 @@
     let currentIndex = -1;
     let isPlaying = false;
     const synth = window.speechSynthesis;
-    const silentAudio = document.getElementById('silentAudio');
 
-    // --- 2. 啟動與載入 ---
     window.onload = async () => {
-        // 恢復使用者設定
-        const speed = localStorage.getItem('v6_speed') || '1.0';
+        // 從 LocalStorage 恢復用戶設定
+        const speed = localStorage.getItem('pro_speed') || '1.0';
         document.getElementById('speedRange').value = speed;
         document.getElementById('speedVal').innerText = speed;
-        document.getElementById('sayExample').checked = localStorage.getItem('v6_sayEx') !== 'false';
-        document.getElementById('autoScroll').checked = localStorage.getItem('v6_scroll') !== 'false';
+        document.getElementById('sayExample').checked = localStorage.getItem('pro_sayEx') !== 'false';
+        document.getElementById('autoScroll').checked = localStorage.getItem('pro_scroll') !== 'false';
         
         await loadData();
     };
 
+    /* -------------------------------------------------------------------------
+       2. 資料處理邏輯 (DATA LOGIC)
+    ------------------------------------------------------------------------- */
     async function loadData() {
         allWords = await db.words.toArray();
         const groups = [...new Set(allWords.map(w => w.Group || '未分類'))];
         const groupFilter = document.getElementById('groupFilter');
-        const lastGroup = localStorage.getItem('v6_lastGroup') || 'ALL';
+        const lastGroup = localStorage.getItem('pro_lastGroup') || 'ALL';
         
-        groupFilter.innerHTML = `<option value="ALL">所有單字 (${allWords.length})</option>` + 
-            groups.map(g => `<option value="${g}">${g} (${allWords.filter(w => (w.Group || '未分類') === g).length})</option>`).join('');
+        groupFilter.innerHTML = `<option value="ALL">全部單字 (${allWords.length})</option>` + 
+            groups.map(g => `<option value="${g}">${g}</option>`).join('');
         
         if ([...groupFilter.options].some(opt => opt.value === lastGroup)) groupFilter.value = lastGroup;
         filterWords();
@@ -122,21 +167,21 @@
 
     function filterWords() {
         const selectedGroup = document.getElementById('groupFilter').value;
-        localStorage.setItem('v6_lastGroup', selectedGroup);
+        localStorage.setItem('pro_lastGroup', selectedGroup);
         filteredWords = (selectedGroup === 'ALL') ? allWords : allWords.filter(w => (w.Group || '未分類') === selectedGroup);
-        document.getElementById('totalCount').innerText = `GROUP: ${filteredWords.length} / TOTAL: ${allWords.length}`;
+        document.getElementById('totalCount').innerText = `目前群組: ${filteredWords.length} / 總量: ${allWords.length}`;
         renderList();
     }
 
     function renderList() {
         const wordListEl = document.getElementById('wordList');
         if (filteredWords.length === 0) {
-            wordListEl.innerHTML = `<div class="text-center py-20 text-slate-300 italic text-sm">請匯入 Excel 或點擊右上方「+新增」單字</div>`;
+            wordListEl.innerHTML = `<div class="text-center py-20 text-slate-300 italic text-sm">請匯入 Excel 開始學習</div>`;
             return;
         }
         wordListEl.innerHTML = filteredWords.map((item, index) => `
-            <div id="word-${index}" class="word-card p-5 bg-white rounded-2xl shadow-sm border border-slate-100 flex gap-4" onclick="previewSpeak(${index})">
-                <div class="text-blue-300 font-black text-[10px] pt-1">#${index + 1}</div>
+            <div id="word-${index}" class="word-card p-5 bg-white rounded-2xl shadow-sm border border-slate-100 flex gap-4" onclick="preview(${index})">
+                <div class="text-blue-200 font-black text-[10px] pt-1">#${index + 1}</div>
                 <div class="flex-1">
                     <div class="flex justify-between items-center mb-1">
                         <span class="text-xl font-bold text-slate-800">${item.Word}</span>
@@ -149,39 +194,32 @@
         `).join('');
     }
 
-    // --- 3. 發音與背景播放核心 ---
+    /* -------------------------------------------------------------------------
+       3. 發音控制邏輯 (AUDIO LOGIC)
+    ------------------------------------------------------------------------- */
     function speak(text, callback) {
-        if (!isPlaying && !window.singlePlay) return;
-        
+        if (!isPlaying && !window.single) return;
         const utter = new SpeechSynthesisUtterance(text);
         utter.rate = parseFloat(document.getElementById('speedRange').value);
         utter.lang = 'en-US';
         utter.onend = callback;
         
-        // 核心：啟用媒體會話 Metadata，這是背景播放成功的關鍵
+        // MediaSession Metadata: 使鎖屏時顯示目前朗讀單字
         if ('mediaSession' in navigator && isPlaying) {
             navigator.mediaSession.metadata = new MediaMetadata({
                 title: filteredWords[currentIndex].Word,
-                artist: 'Vocab Pro 正在朗讀...',
-                album: 'English Learning'
+                artist: 'Vocab Pro 正在學習中...',
+                album: 'English Master'
             });
         }
-        
         synth.speak(utter);
     }
-
-    window.previewSpeak = (index) => {
-        window.singlePlay = true;
-        synth.cancel();
-        speak(filteredWords[index].Word, () => window.singlePlay = false);
-    };
 
     async function playLoop() {
         if (!isPlaying) return;
         if (currentIndex >= filteredWords.length - 1) currentIndex = -1;
         currentIndex++;
         
-        // UI 更新
         document.querySelectorAll('.active-word').forEach(el => el.classList.remove('active-word'));
         const currentEl = document.getElementById(`word-${currentIndex}`);
         if (currentEl) {
@@ -190,11 +228,8 @@
         }
 
         const wordObj = filteredWords[currentIndex];
-        
-        // 朗讀單字
         speak(wordObj.Word, () => {
-            const hasEx = document.getElementById('sayExample').checked && wordObj.Example;
-            if (hasEx) {
+            if (document.getElementById('sayExample').checked && wordObj.Example) {
                 setTimeout(() => speak(wordObj.Example, () => setTimeout(playLoop, 2000)), 800);
             } else {
                 setTimeout(playLoop, 1500);
@@ -202,87 +237,93 @@
         });
     }
 
-    // --- 4. 存檔與互動邏輯 ---
+    /* -------------------------------------------------------------------------
+       4. 事件監聽與交互 (UI & EVENT LISTENERS)
+    ------------------------------------------------------------------------- */
+    // 版本與歷史 Modal
+    document.getElementById('versionTag').addEventListener('click', () => document.getElementById('historyModal').style.display = 'flex');
+    document.getElementById('closeHistory').addEventListener('click', () => document.getElementById('historyModal').style.display = 'none');
+
+    // 儲存單字
     document.getElementById('saveWordBtn').addEventListener('click', async () => {
         const Word = document.getElementById('newWord').value.trim();
-        const Group = document.getElementById('newGroup').value.trim() || '未分類';
-        const Pos = document.getElementById('newPos').value.trim();
-        const Definition = document.getElementById('newDef').value.trim();
-        const Example = document.getElementById('newEx').value.trim();
-
-        if (!Word) { alert("單字名稱不能為空！"); return; }
-
-        try {
-            // 使用 put 取代 add，即使單字重複也會更新內容而不會出錯
-            await db.words.put({ Word, Group, Pos, Definition, Example });
-            
-            // 清空表單並隱藏
-            document.querySelectorAll('#addForm input, #addForm textarea').forEach(i => i.value = '');
-            document.getElementById('addForm').classList.add('hidden');
-            
-            // 立即重新載入並過濾
-            await loadData();
-            alert(`單字「${Word}」已成功儲存！`);
-        } catch (e) {
-            console.error(e);
-            alert("儲存失敗，請檢查資料庫狀態。");
-        }
+        if (!Word) return;
+        await db.words.put({
+            Word,
+            Group: document.getElementById('newGroup').value.trim() || '未分類',
+            Pos: document.getElementById('newPos').value.trim(),
+            Definition: document.getElementById('newDef').value.trim(),
+            Example: document.getElementById('newEx').value.trim()
+        });
+        document.getElementById('addForm').classList.add('hidden');
+        await loadData();
     });
 
+    // 播放與停止
     document.getElementById('playBtn').addEventListener('click', () => {
         if (filteredWords.length === 0) return;
         isPlaying = true;
-        document.getElementById('playBtn').innerText = "🔊 背景播放中...";
-        
-        // 啟動無聲底噪，這是防止 iOS 背景休眠的絕招
-        silentAudio.play().catch(e => console.log("Audio play blocked"));
-        
+        document.getElementById('playBtn').innerText = "🔊 播放中...";
         playLoop();
     });
 
     document.getElementById('stopBtn').addEventListener('click', () => {
         isPlaying = false;
         synth.cancel();
-        silentAudio.pause();
         document.getElementById('playBtn').innerText = "開始循環播放";
     });
 
+    // Excel 匯入
     document.getElementById('excelInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
         const data = await file.arrayBuffer();
         const workbook = XLSX.read(data);
         const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
         for (const item of jsonData) {
-            try { await db.words.put({
-                Word: String(item.Word || '').trim(),
-                Group: String(item.Group || '未分類').trim(),
-                Pos: String(item.Pos || '').trim(),
-                Definition: String(item.Definition || '').trim(),
-                Example: String(item.Example || '').trim()
-            }); } catch (e) {}
+            try {
+                await db.words.put({
+                    Word: String(item.Word || '').trim(),
+                    Group: String(item.Group || '未分類').trim(),
+                    Pos: String(item.Pos || '').trim(),
+                    Definition: String(item.Definition || '').trim(),
+                    Example: String(item.Example || '').trim()
+                });
+            } catch (e) {}
         }
-        loadData();
+        await loadData();
         e.target.value = "";
     });
 
-    // 其他 UI 控制
-    document.getElementById('groupFilter').addEventListener('change', () => { isPlaying = false; synth.cancel(); filterWords(); });
-    document.getElementById('speedRange').addEventListener('change', (e) => {
-        localStorage.setItem('v6_speed', e.target.value);
-        document.getElementById('speedVal').innerText = e.target.value;
-    });
-    document.getElementById('sayExample').addEventListener('change', (e) => localStorage.setItem('v6_sayEx', e.target.checked));
-    document.getElementById('autoScroll').addEventListener('change', (e) => localStorage.setItem('v6_scroll', e.target.checked));
+    // 導出備份
     document.getElementById('exportBtn').addEventListener('click', async () => {
         const all = await db.words.toArray();
         const ws = XLSX.utils.json_to_sheet(all.map(w => ({Word:w.Word, Group:w.Group, Pos:w.Pos, Definition:w.Definition, Example:w.Example})));
-        const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Words");
-        XLSX.writeFile(wb, `Backup_${new Date().toLocaleDateString()}.xlsx`);
+        const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Backup");
+        XLSX.writeFile(wb, `Vocab_Backup_${new Date().toLocaleDateString()}.xlsx`);
     });
+
+    // 設定同步到 LocalStorage
+    document.getElementById('groupFilter').addEventListener('change', () => { isPlaying = false; synth.cancel(); filterWords(); });
+    document.getElementById('speedRange').addEventListener('change', (e) => {
+        localStorage.setItem('pro_speed', e.target.value);
+        document.getElementById('speedVal').innerText = e.target.value;
+    });
+    document.getElementById('sayExample').addEventListener('change', (e) => localStorage.setItem('pro_sayEx', e.target.checked));
+    document.getElementById('autoScroll').addEventListener('change', (e) => localStorage.setItem('pro_scroll', e.target.checked));
+
+    // UI 切換
     document.getElementById('toggleAddForm').addEventListener('click', () => document.getElementById('addForm').classList.toggle('hidden'));
     document.getElementById('closeFormBtn').addEventListener('click', () => document.getElementById('addForm').classList.add('hidden'));
-    document.getElementById('clearBtn').addEventListener('click', async () => { if(confirm('重設將刪除所有單字，確定嗎？')){ await db.words.clear(); loadData(); } });
+    document.getElementById('clearBtn').addEventListener('click', async () => { if(confirm('確定要永久清空資料嗎？')){ await db.words.clear(); loadData(); } });
 
+    // 預覽單一發音
+    window.preview = (index) => {
+        window.single = true;
+        const utter = new SpeechSynthesisUtterance(filteredWords[index].Word);
+        utter.lang = 'en-US';
+        utter.onend = () => window.single = false;
+        synth.speak(utter);
+    };
 </script>
 </body>
 </html>
